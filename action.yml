@@ -1,0 +1,14 @@
+# action.yml
+name: 'Pretix Builder'
+description: 'Build Pretix Docker container'
+inputs:
+  version-to-build:  # id of input
+    description: 'Version tag for new build'
+    required: true
+    default: 'newbuild'
+outputs:
+  time: # id of output
+    description: 'The time we greeted you'
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
