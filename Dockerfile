@@ -1,4 +1,4 @@
-FROM pretix/standalone:2024.8.0
+FROM pretix/standalone:2024.10.0
 USER root
 RUN pip3 install pretix-fontpack-free
 RUN pip3 install pretix-pages
