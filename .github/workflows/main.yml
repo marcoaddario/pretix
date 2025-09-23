@@ -1,9 +1,5 @@
 on: [push]
 
-env:
-  # Setting an environment variable with the value of a configuration variable
-  extra-tag: ${{ vars.PRETIX_VERSION }}
-
 
 jobs:
   pretix_job:
@@ -20,6 +16,6 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           push: true
-          tags: marco74/pretix:latest,marco74/pretix:$extra-tag
+          tags: marco74/pretix:latest,marco74/pretix:${{ vars.PRETIX_VERSION }}
           
 
