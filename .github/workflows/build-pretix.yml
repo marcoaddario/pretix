@@ -40,11 +40,11 @@ jobs:
       - name: Create Dockerfile
         run: |
           cat > Dockerfile << 'EOF'
-          ARG PRETIX_VERSION
+          ARG PRETIX_VERSION=stable
           FROM pretix/standalone:${PRETIX_VERSION}
           
           USER root
-          RUN pip3 install \
+          RUN pip3 install --no-cache-dir \
               pretix-fontpack-free \
               pretix-pages
           
@@ -64,7 +64,7 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPOSITORY }}:${{ steps.version.outputs.version }}
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPOSITORY }}:latest
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
