@@ -1,0 +1,7 @@
+# Font packs
+pretix-fontpack-free
+
+# Additional pages functionality
+#pretix-pages==1.6.3
+pretix-pages
+
