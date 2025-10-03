@@ -1,0 +1,70 @@
+name: Build Custom Pretix Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      pretix_version:
+        description: 'Pretix version to build (e.g., stable, 2024.7.0)'
+        required: true
+        default: 'stable'
+        type: string
+
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_REPOSITORY: ${{ secrets.DOCKERHUB_REPOSITORY }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract version tag
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.pretix_version }}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Building Pretix version: ${VERSION}"
+
+      - name: Create Dockerfile
+        run: |
+          cat > Dockerfile << 'EOF'
+          ARG PRETIX_VERSION
+          FROM pretix/standalone:${PRETIX_VERSION}
+          
+          USER root
+          RUN pip3 install \
+              pretix-fontpack-free \
+              pretix-pages
+          
+          USER pretix
+          EOF
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          build-args: |
+            PRETIX_VERSION=${{ steps.version.outputs.version }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPOSITORY }}:${{ steps.version.outputs.version }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPOSITORY }}:latest
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image digest
+        run: echo "Image pushed successfully!"
