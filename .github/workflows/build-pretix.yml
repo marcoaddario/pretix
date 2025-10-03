@@ -48,7 +48,9 @@ jobs:
               pretix-fontpack-free \
               pretix-pages
           
-          USER pretix
+          USER pretixuser
+          RUN cd /pretix/src && make production
+          
           EOF
 
       - name: Build and push Docker image
