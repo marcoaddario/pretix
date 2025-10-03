@@ -44,9 +44,9 @@ jobs:
           FROM pretix/standalone:${PRETIX_VERSION}
           
           USER root
-          RUN pip3 install --no-cache-dir \
-              pretix-fontpack-free \
-              pretix-pages
+          COPY pretix-plugins.txt /tmp/pretix-plugins.txt
+          RUN pip3 install --no-cache-dir -r /tmp/pretix-plugins.txt && \
+              rm /tmp/pretix-plugins.txt
           
           USER pretixuser
           RUN cd /pretix/src && make production
