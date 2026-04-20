@@ -4,3 +4,5 @@ pretix-fontpack-free
 # Additional pages functionality
 pretix-pages
 
+# sumup payment provider
+pretix-sumup-payment
