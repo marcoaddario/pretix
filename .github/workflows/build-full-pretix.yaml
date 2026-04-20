@@ -1,5 +1,5 @@
 # =============================================================================
-# .github/workflows/build-full-pretix.yml
+# .github/workflows/build-pretix.yml
 #
 # Builds a hardened pretix/standalone-compatible image and pushes it to:
 #   - GitHub Container Registry  (ghcr.io/<your-org>/<repo>)
@@ -24,7 +24,7 @@
 # GITHUB_TOKEN is provided automatically for GHCR authentication.
 # =============================================================================
 
-name: Fully Build Custom Pretix Docker Image
+name: Build Custom Pretix Docker Image
 
 on:
   # ── Trigger 1: Poll PyPI nightly for a new pretix release ─────────────────
@@ -233,8 +233,15 @@ jobs:
       # ── 8. Trivy vulnerability scan ───────────────────────────────────────────
       #    Warns on HIGH/CRITICAL but does NOT block the build.
       #    Change exit-code to 1 to make criticals fail the pipeline.
+      #
+      #    PINNED TO COMMIT SHA — not a mutable tag.
+      #    Background: on 2026-03-19 the trivy-action repo was compromised via
+      #    a supply chain attack that force-pushed 76/77 version tags to
+      #    malicious commits. Only v0.35.0 survived (immutable release).
+      #    The SHA below corresponds to the verified clean v0.35.0 tag.
+      #    Ref: https://github.com/aquasecurity/trivy-action/releases/tag/v0.35.0
       - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@57a97c7843d7f0386f25767a6e5f4c3c1c6e0b6a  # v0.35.0
         with:
           image-ref: ${{ env.GHCR_IMAGE }}:stable
           format: sarif
