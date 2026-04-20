@@ -1,0 +1,275 @@
+# =============================================================================
+# .github/workflows/build-full-pretix.yml
+#
+# Builds a hardened pretix/standalone-compatible image and pushes it to:
+#   - GitHub Container Registry  (ghcr.io/<your-org>/<repo>)
+#   - Docker Hub                 (<dockerhub-user>/<repo>)
+#
+# Incorporates custom plugin installation from pretix-plugins.txt
+# (original approach from marcoaddario/pretix), now merged with a full
+# from-scratch hardened build (not layering on top of the vulnerable
+# official image).
+#
+# Triggers:
+#   1. When a new pretix release is detected on PyPI (polled nightly).
+#   2. Manual trigger (workflow_dispatch) — same UX as the original workflow,
+#      accepts an explicit version string or defaults to latest PyPI release.
+#
+# Required repository secrets:
+#   DOCKERHUB_USERNAME      – Docker Hub username
+#   DOCKERHUB_TOKEN         – Docker Hub access token (not your password)
+#   DOCKERHUB_REPOSITORY    – Target Docker Hub repository name
+#                             (e.g. "pretix-hardened")
+#
+# GITHUB_TOKEN is provided automatically for GHCR authentication.
+# =============================================================================
+
+name: Build Custom Pretix Docker Image
+
+on:
+  # ── Trigger 1: Poll PyPI nightly for a new pretix release ─────────────────
+  schedule:
+    - cron: "0 3 * * *"   # 03:00 UTC every day
+
+  # ── Trigger 2: Manual run — mirrors original workflow UX ──────────────────
+  workflow_dispatch:
+    inputs:
+      pretix_version:
+        description: >
+          Pretix version to build (e.g. "2024.8.0" or "stable").
+          Leave blank to use the latest release from PyPI.
+        required: false
+        default: ""
+        type: string
+      force_rebuild:
+        description: "Force rebuild even if no new pretix version detected"
+        type: boolean
+        default: false
+
+env:
+  # ── Image names ─────────────────────────────────────────────────────────────
+  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/${{ secrets.DOCKERHUB_REPOSITORY }}
+  DOCKERHUB_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPOSITORY }}
+
+  # ── Python base image – edit here to change the hardened base ───────────────
+  PYTHON_BASE: python:3.13-slim-bookworm
+
+jobs:
+  # ============================================================================
+  # JOB 1 – check-version
+  # Resolves the pretix version to build and decides whether a build is needed.
+  #
+  # Logic (in priority order):
+  #   a) Manual input with explicit version  → always build that version
+  #   b) Manual input empty / scheduled      → fetch latest from PyPI
+  #      and compare against last pushed tag; skip if already up to date
+  #      (unless force_rebuild is set)
+  # ============================================================================
+  check-version:
+    name: Check for new pretix release
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+      version: ${{ steps.decide.outputs.version }}
+
+    steps:
+      - name: Fetch latest pretix version from PyPI
+        id: pypi
+        run: |
+          LATEST=$(curl -sSf https://pypi.org/pypi/pretix/json | \
+                   python3 -c "import sys,json; d=json.load(sys.stdin); print(d['info']['version'])")
+          echo "pypi_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Latest pretix on PyPI: $LATEST"
+
+      - name: Determine last built version (from GHCR image label)
+        id: last_built
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LAST=$(docker manifest inspect \
+                   ghcr.io/${{ github.repository_owner }}/${{ secrets.DOCKERHUB_REPOSITORY }}:stable \
+                   2>/dev/null | \
+                 python3 -c "
+          import sys, json
+          try:
+              d = json.load(sys.stdin)
+              labels = d.get('config', {}).get('Labels', {}) or {}
+              print(labels.get('org.opencontainers.image.version', 'none'))
+          except Exception:
+              print('none')
+          " || echo "none")
+          echo "last_built=$LAST" >> "$GITHUB_OUTPUT"
+          echo "Last built version: $LAST"
+
+      - name: Decide whether to build
+        id: decide
+        run: |
+          PYPI_VER="${{ steps.pypi.outputs.pypi_version }}"
+          LAST_VER="${{ steps.last_built.outputs.last_built }}"
+          MANUAL_VER="${{ github.event.inputs.pretix_version }}"
+          FORCE="${{ github.event.inputs.force_rebuild }}"
+
+          # (a) Explicit manual version supplied → always build it
+          if [[ -n "$MANUAL_VER" && "$MANUAL_VER" != "stable" ]]; then
+            echo "should_build=true"   >> "$GITHUB_OUTPUT"
+            echo "version=$MANUAL_VER" >> "$GITHUB_OUTPUT"
+            echo "Decision: manual version $MANUAL_VER → building"
+            exit 0
+          fi
+
+          # (b) "stable" shorthand or empty → resolve to PyPI latest
+          TARGET="$PYPI_VER"
+          if [[ "$TARGET" != "$LAST_VER" || "$FORCE" == "true" ]]; then
+            echo "should_build=true"  >> "$GITHUB_OUTPUT"
+            echo "version=$TARGET"    >> "$GITHUB_OUTPUT"
+            echo "Decision: new version $TARGET (was $LAST_VER) → building"
+          else
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "version=$TARGET"    >> "$GITHUB_OUTPUT"
+            echo "Decision: already on $TARGET → skipping"
+          fi
+
+  # ============================================================================
+  # JOB 2 – build-and-push
+  # ============================================================================
+  build-and-push:
+    name: Build & Push pretix ${{ needs.check-version.outputs.version }}
+    runs-on: ubuntu-latest
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+
+    permissions:
+      contents: read
+      packages: write   # push to GHCR
+      id-token: write   # provenance / SBOM attestation
+      security-events: write  # upload Trivy SARIF
+
+    steps:
+      # ── 1. Checkout THIS repository ─────────────────────────────────────────
+      #    Contains: Dockerfile, pretix-plugins.txt, this workflow
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Clone pretix source at the resolved release tag ──────────────────
+      - name: Clone pretix source v${{ needs.check-version.outputs.version }}
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          git clone --depth 1 --branch "$VERSION" \
+            https://github.com/pretix/pretix.git pretix-src
+          echo "Cloned pretix $VERSION successfully"
+
+      # ── 3. Assemble build context ────────────────────────────────────────────
+      #    Lay out the directory structure our Dockerfile expects,
+      #    alongside the pretix-plugins.txt from THIS repo.
+      - name: Prepare build context
+        run: |
+          cp -r pretix-src/deployment  ./deployment
+          cp -r pretix-src/src         ./src
+          cp -r pretix-src/_build      ./_build 2>/dev/null || mkdir -p _build
+          cp    pretix-src/pyproject.toml ./pyproject.toml
+          echo "Build context prepared. Plugin file:"
+          cat pretix-plugins.txt || echo "(pretix-plugins.txt is empty — no extra plugins)"
+
+      # ── 4. Set up QEMU + buildx ──────────────────────────────────────────────
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── 5. Log in to registries ──────────────────────────────────────────────
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # ── 6. Generate image tags and OCI labels ────────────────────────────────
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.GHCR_IMAGE }}
+            ${{ env.DOCKERHUB_IMAGE }}
+          tags: |
+            type=raw,value=stable
+            type=raw,value=latest
+            type=raw,value=${{ needs.check-version.outputs.version }}
+            type=raw,value=${{ needs.check-version.outputs.version }}-{{date 'YYYYMMDD'}}
+          labels: |
+            org.opencontainers.image.title=pretix-hardened
+            org.opencontainers.image.description=Hardened pretix standalone image on ${{ env.PYTHON_BASE }} with custom plugins
+            org.opencontainers.image.version=${{ needs.check-version.outputs.version }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.upstream=https://github.com/pretix/pretix
+
+      # ── 7. Build and push ─────────────────────────────────────────────────────
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            PYTHON_BASE=${{ env.PYTHON_BASE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      # ── 8. Trivy vulnerability scan ───────────────────────────────────────────
+      #    Warns on HIGH/CRITICAL but does NOT block the build.
+      #    Change exit-code to 1 to make criticals fail the pipeline.
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.GHCR_IMAGE }}:stable
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: 0
+          ignore-unfixed: true
+
+      - name: Upload Trivy SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Upload Trivy results as artefact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-results-${{ needs.check-version.outputs.version }}
+          path: trivy-results.sarif
+          retention-days: 90
+
+      # ── 9. Build summary ──────────────────────────────────────────────────────
+      - name: Image digest
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          echo "## ✅ pretix $VERSION built and pushed" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Registry | Image |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| GHCR       | \`${{ env.GHCR_IMAGE }}:$VERSION\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Docker Hub | \`${{ env.DOCKERHUB_IMAGE }}:$VERSION\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Base image:** \`${{ env.PYTHON_BASE }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Platforms:** linux/amd64, linux/arm64" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Digest:** ${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Image pushed successfully!"
