@@ -24,7 +24,7 @@
 # GITHUB_TOKEN is provided automatically for GHCR authentication.
 # =============================================================================
 
-name: Build Custom Pretix Docker Image
+name: Fully Build Custom Pretix Docker Image
 
 on:
   # ── Trigger 1: Poll PyPI nightly for a new pretix release ─────────────────
